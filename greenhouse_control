@@ -1,0 +1,448 @@
+# sudo pigpiod
+
+global window_open
+window_open = False
+
+# stream: enthought blog raspberry pi sensor and actuator control
+import time
+from time import gmtime, strftime
+
+import RPi.GPIO as GPIO
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BOARD) # GPIO.BCM
+
+import pigpio
+
+import requests
+
+import random
+
+import tkinter as tk 
+from tkinter import messagebox
+
+from pi_sht1x import SHT1x
+
+from gpiozero import CPUTemperature
+
+import threading
+
+KEY = '8HJBG4MXTMBQZBJL'
+def pushData(temp_in:float, hum_in:float, water_level:float, temp_CPU:float):
+    '''Takes sensor readings and pushes to ThingSpeak server'''
+    # Set up request url and parameters
+    url = 'https://api.thingspeak.com/update'
+    params = {'key': KEY, 'field1':temp_in, 'field2': hum_in, 'field3': water_level, 'field4': temp_CPU}
+    # Pubish values to ThingSpeal
+    res = requests.get(url, params=params)
+    
+# deprecated because this costs mone - but is really pretty
+## Import the ISStreamer module
+#from ISStreamer.Streamer import Streamer
+#streamer = Streamer(bucket_name="Greenhouse balcony", bucket_key="greenhouse", access_key="ist_uQ9Jftyd9BUrfw1agQtlbcVkCdE4IFeb")
+
+global interval
+interval = 10*60 # seconds
+
+# 1 = upper
+# 2 = upper
+# 3 = lower
+# 4 = upper out
+# 5 = lower out
+watering_times = [20,20,3,120,100] # seconds
+watering_clock_hour = 16
+
+global temp_day_max
+global temp_day_min
+global temp_night_max
+global temp_night_min
+
+global hum_day_max
+global hum_day_min
+global hum_night_max
+global hum_night_min
+
+temp_day_max = 26
+temp_day_min = 20
+temp_night_max = 25
+temp_night_min = 20
+
+hum_day_max = 80
+hum_day_min = 70
+hum_night_max = 90
+hum_night_min = 80
+
+# PINs
+# window servo = 7
+#global pump_relay_pin
+pump_relay_pin = 40
+#global fan_relay_pin
+fan_relay_pin = 38
+#global moist_relay_pin
+moist_relay_pin = 23
+#global moist_sens_pins
+moist_sens_pins = [21] # 27 is not allowed ,19,21,23
+
+off = 1
+on = 0
+
+#global pump_relay_pin
+GPIO.setup(pump_relay_pin, GPIO.OUT)
+GPIO.output(pump_relay_pin, off)
+
+#global fan_relay_pin
+GPIO.setup(fan_relay_pin, GPIO.OUT)
+GPIO.output(fan_relay_pin, off)
+
+#global moist_relay_pin
+GPIO.setup(moist_relay_pin, GPIO.OUT)
+GPIO.output(moist_relay_pin, on)
+
+#global moist_sens_pins
+for pin in moist_sens_pins:
+    GPIO.setup(pin, GPIO.IN)
+        
+# global water_sens_pins
+water_servo_pins = [5,6,13,19,26] 
+# why indent?
+
+servo_state = -1
+ 
+def Fan_switch(value):
+    print("FAN ", value)
+    global fan_relay_pin
+    GPIO.setmode(GPIO.BOARD)
+    GPIO.setup(fan_relay_pin, GPIO.OUT)
+    GPIO.output(fan_relay_pin, value)
+    if value == on:
+        fan_on['state']='disabled'
+        fan_off['state']='normal'
+    elif value == off:
+        fan_on['state']='normal'
+        fan_off['state']='disabled'
+        
+    
+def Pump_switch(value):
+    print("PUMP ", value)
+    global pump_relay_pin
+    GPIO.setmode(GPIO.BOARD)
+    GPIO.setup(pump_relay_pin, GPIO.OUT)
+    GPIO.output(pump_relay_pin, value)
+    if value == on:
+        pump_on['state']='disabled'
+        pump_off['state']='normal'
+    elif value == off:
+        pump_on['state']='normal'
+        pump_off['state']='disabled'
+
+
+def Move_servo_to_90(servo_pin):
+    global servo_deg
+    servo_deg = 90
+    Move_servo(servo_pin)
+    
+def Move_servo_to_0(servo_pin):
+    print(servo_pin)
+    global servo_deg
+    servo_deg = 0
+    Move_servo(servo_pin)
+
+def Move_servo(servo_pin):
+    pi = pigpio.pi()
+    valve_steps = 1000
+    valve_open = 1500 # 0°
+    valve_closed = 500 # 90°
+
+    global servo_state
+    if servo_deg == 0: # and servo_state != 0:
+        print('Opening valve...')
+        for i in range(valve_steps):
+            current_Duty = valve_closed-i*((valve_closed-valve_open)/valve_steps)
+        #    print(current_Duty)
+            pi.set_servo_pulsewidth(servo_pin, current_Duty)
+            time.sleep(0.002)
+        time.sleep(2)
+        pi.set_servo_pulsewidth(servo_pin, 0)
+        servo_state = 0
+        print('Valve open.')
+        
+    elif servo_deg == 90: # and servo_state != 90:
+        print('Closing valve...')
+        for i in range(valve_steps):
+            current_Duty = valve_open+i*((valve_closed-valve_open)/valve_steps)
+        #    print(current_Duty)
+#            pwm.ChangeDutyCycle(current_Duty)
+            pi.set_servo_pulsewidth(servo_pin, current_Duty)
+            time.sleep(0.002)
+        time.sleep(2)
+        pi.set_servo_pulsewidth(servo_pin, 0)
+        servo_state = 90
+        print('Valve closed.')
+        
+    #else: print('Valve already in position.')
+
+def Read_CPU_temp():
+    global temp_CPU
+    temp_file = open('/sys/class/thermal/thermal_zone0/temp')
+    temp_CPU_ = temp_file.read()
+    temp_file.close()
+    temp_CPU = int(temp_CPU_)/1000
+
+def Read_SHT10():
+    global temp_in
+    global hum_in
+    with SHT1x(3, 5) as sensor: #18, 23, gpio_mode=GPIO.BCM
+        temp_in = sensor.read_temperature()
+        hum_in = sensor.read_humidity(temp_in)
+#    temp_in = 22
+#    hum_in = 60
+#            sensor.calculate_dew_point(temp, hum)
+
+def Read_water_level():
+    global water_level
+    water_level = 16
+    
+def Read_moisture():
+    GPIO.setmode(GPIO.BOARD)
+    GPIO.setup(moist_relay_pin, GPIO.OUT)
+    GPIO.output(moist_relay_pin, off)
+    time.sleep(1) # probably not necessary
+#    print("measuring...")
+    #moist_sens_pins = [21] # 27 is not allowed ,19,21,23
+    for pin in moist_sens_pins:
+#        GPIO.setup(pin, GPIO.IN)
+        GPIO.setup(pin, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
+    global wet
+    wet = GPIO.input(moist_sens_pins[0])
+    GPIO.output(moist_relay_pin, on)
+    print(wet)
+#    if wet:
+#        print("wet")
+#    else:
+#        print("dry")
+
+def Check_values():
+    global temp_check
+    global hum_check
+    
+    if(temp_in > temp_day_max):
+        print("Greenhouse too warm.")
+        Fan_switch(on)
+        temp_check = 2
+    elif(temp_in >= temp_day_min and temp_in <= temp_day_max):
+        print("Greenhouse temperature good.")
+        temp_check = 1
+    else:
+        print("Greenhouse too cold.")
+        temp_check = 0
+    
+    if(temp_CPU > 75):
+        print("CPU too warm.")
+        temp_check_CPU = 2
+    else:
+        print("CPU temperature good.")
+        temp_check_CPU = 1
+        
+def Correct_values():
+    global window_open
+    if temp_check == 0:
+        Fan_switch(off)
+        if window_open == True:
+            # Forward_10mm()
+            window_open = False
+            
+    elif temp_check == 2:
+        Fan_switch(on)
+        if window_open == False:
+            # Backward_10mm()
+            window_open = True
+            
+    elif temp_check == 1:
+        Fan_switch(off)
+        if window_open == True:
+            # Forward_10mm()
+            window_open = False
+
+#def insertVariablesIntoTable(temp_in, hum_in):
+#    try:
+#        connection = mysql.connector.connect(host='localhost',
+#                                             database='greenhouse',
+#                                             user='Tianjun',
+#                                             password='4711')
+#        
+#        cursor = connection.cursor()
+#        mySql_insert_query = """INSERT INTO data(temperature, humidity)
+#                                VALUES (%s, %s) """
+#        recordTuple = (temp_in, hum_in)
+#        cursor.execute(mySql_insert_query, recordTuple)
+#        connection.commit()
+##        print("Record inerted successfully ")
+#
+#    except mysql.connector.Error as error:
+#        print("Failed to create table in MySQL: {}".format(error))
+        
+#    finally:
+#        if (connection.is_connected()):
+#            cursor.close()
+#            connection.close()
+##            print("MySQL connection is closed")
+
+def ExitApplication():
+    MsgBox = tk.messagebox.askquestion ('Exit Application','Quit greenhousing?',icon = 'warning')
+    if MsgBox == 'yes':
+        root.destroy()
+        exit()
+    else:
+        tk.messagebox.showinfo('Return','The plants love you!')
+
+def Run():
+    start_animation['state']='disabled'
+    Loop_thread = threading.Thread(target=Loop)
+    Loop_thread.start()
+    
+def Loop():
+    while True:        
+        # read temp and hum
+        Read_SHT10()
+#        global temp_in
+#        global hum_in
+#        temp_in = 25
+#        hum_in = 40
+        
+        # read moistures
+        Read_moisture()
+        
+        # read CPU temp
+        Read_CPU_temp()
+#        temp_CPU = CPUTemperature().temperature
+        
+        # read water tank level
+        Read_water_level()
+        
+        print(temp_in, hum_in, temp_CPU) # , wet , temp_CPU
+        # check if values are in line with desired values
+        Check_values()
+        
+        Correct_values()
+        
+#        # insert values into MySQL table
+#        insertVariablesIntoTable(temp_in, hum_in) # hum_in
+        try:
+            pushData(temp_in, hum_in, water_level, temp_CPU)
+        except Exception:
+            print("Sending data failed. Connection could not be established...")
+        # check time and water plants zwice a day
+        print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
+        hour = int(strftime("%H", gmtime()))
+        minute = int(strftime("%M", gmtime()))
+        #print(hour, ":", minute)
+        if hour == watering_clock_hour and minute < (interval/60):
+            print("watering plants (morning)...")
+            for module in range(5):
+                if watering_times[module] > 0:
+                    print("watering module ", module+1, "...")
+                    Move_servo_to_0(water_servo_pins[module])
+                    Pump_switch(on)
+                    time.sleep(watering_times[module])
+                    Pump_switch(off)
+                    Move_servo_to_90(water_servo_pins[module])
+                
+#        if hour == 15 and minute < 5:
+#            print("watering plants (afternoon)...")
+#            for module in range(5):
+#                print("watering module ", module+1, "...")
+#                Move_servo_to_0(water_servo_pins[module])
+#                Pump_switch(on)
+#                time.sleep(watering_times[module])
+#                Pump_switch(off)
+#                Move_servo_to_90(water_servo_pins[module])
+        
+        # wait for interval seconds
+        time.sleep(interval - time.time() % interval)
+        
+
+            
+root = tk.Tk() 
+root.title("Greenhouse v.0.1")         
+# Fixing the window size. 
+root.minsize(width=300, height=70) 
+label = tk.Label(root, text="Greenhouse", fg="black", font="Verdana 14 bold") 
+#label.pack()
+
+start_animation = tk.Button(root, text='Start sensors',  
+width=20, state='normal', command=Run)
+
+servo0_1 = tk.Button(root, text='Open Valve 1',  
+width=10, state='normal', command=lambda: Move_servo_to_0(water_servo_pins[0]))
+
+servo90_1 = tk.Button(root, text='Close Valve 1',  
+width=10, state='normal', command=lambda: Move_servo_to_90(water_servo_pins[0]))
+
+servo0_2 = tk.Button(root, text='Open Valve 2',  
+width=10, state='normal', command=lambda: Move_servo_to_0(water_servo_pins[1]))
+
+servo90_2 = tk.Button(root, text='Close Valve 2',  
+width=10, state='normal', command=lambda: Move_servo_to_90(water_servo_pins[1]))
+
+servo0_3 = tk.Button(root, text='Open Valve 3',  
+width=10, state='normal', command=lambda: Move_servo_to_0(water_servo_pins[2]))
+
+servo90_3 = tk.Button(root, text='Close Valve 3',  
+width=10, state='normal', command=lambda: Move_servo_to_90(water_servo_pins[2]))
+
+servo0_4 = tk.Button(root, text='Open Valve 4',  
+width=10, state='normal', command=lambda: Move_servo_to_0(water_servo_pins[3]))
+
+servo90_4 = tk.Button(root, text='Close Valve 4',  
+width=10, state='normal', command=lambda: Move_servo_to_90(water_servo_pins[3]))
+
+servo0_5 = tk.Button(root, text='Open Valve 5',  
+width=10, state='normal', command=lambda: Move_servo_to_0(water_servo_pins[4]))
+
+servo90_5 = tk.Button(root, text='Close Valve 5',  
+width=10, state='normal', command=lambda: Move_servo_to_90(water_servo_pins[4]))
+
+fan_on = tk.Button(root, text='FAN on',  
+width=10, state='normal', command=lambda: Fan_switch(on))
+
+fan_off = tk.Button(root, text='FAN off',  
+width=10, state='normal', command=lambda: Fan_switch(off))
+
+pump_on = tk.Button(root, text='PUMP on',  
+width=10, state='normal', command=lambda: Pump_switch(on))
+
+pump_off = tk.Button(root, text='PUMP off',  
+width=10, state='normal', command=lambda: Pump_switch(off))
+
+end = tk.Button(root, text='Exit', 
+width=8, state='normal', command=ExitApplication)
+
+r=0
+start_animation.grid(row=r,column=0, columnspan = 2)
+r+=1
+servo90_1.grid(row=r,column=0) 
+servo0_1.grid(row=r,column=1)
+r+=1
+servo90_2.grid(row=r,column=0) 
+servo0_2.grid(row=r,column=1)
+r+=1
+servo90_3.grid(row=r,column=0) 
+servo0_3.grid(row=r,column=1)
+r+=1
+servo90_4.grid(row=r,column=0) 
+servo0_4.grid(row=r,column=1)
+r+=1
+servo90_5.grid(row=r,column=0) 
+servo0_5.grid(row=r,column=1)
+r+=1
+fan_on.grid(row=r,column=0) 
+fan_off.grid(row=r,column=1)
+r+=1
+pump_on.grid(row=r,column=0) 
+pump_off.grid(row=r,column=1)
+r+=1
+end.grid(row=r,column=1)
+
+
+fan_off['state']='disabled'
+pump_off['state']='disabled'
+root.mainloop()
