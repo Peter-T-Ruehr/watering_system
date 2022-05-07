@@ -1,3 +1,5 @@
+# v0.0.9000
+
 # sudo pigpiod
 
 global window_open
@@ -105,6 +107,7 @@ def Read_moisture():
 
 def Read_water_level():
     global water_levels
+    global distance
     repeats = 100
     distances = []
     for i in range(repeats):
@@ -138,7 +141,7 @@ def Read_water_level():
     
     if distance < 28: # 25 min range of JSN-SR04T
         distance_perc = 100
-    elif distance >= 28 & distance <= 60:
+    elif distance >= 28 and distance <= 60:
         distance_perc = (36-distance)*100/12.5
     else :
         distance_perc = 0
@@ -167,6 +170,14 @@ def Check_values():
     else:
         print("CPU temperature good.")
         temp_check_CPU = 1
+    
+    print ("distance = %.1f cm" % distance)
+    if(distance < 0):
+        print("Water level too low.")
+        level_check_water = 2
+    else:
+        print("Water level sufficient.")
+        level_check_water = 1
         
 def Correct_values():
     print("doing nothing....")
@@ -194,11 +205,11 @@ def Loop():
         
         # read CPU temp
         Read_CPU_temp()
+        # print(temp_CPU)
         
         # read water tank level
-        distance = Read_water_level()
+        Read_water_level()
         
-        print(temp_CPU) # , wet , temp_CPU
         # check if values are in line with desired values
         Check_values()
         
@@ -221,7 +232,7 @@ def Loop():
 
             
 root = tk.Tk() 
-root.title("Watering System v.0.1")
+root.title("Watering System)
 
 # Fixing the window size. 
 # root.geometry(width=300, height=70) 
@@ -252,4 +263,3 @@ end.grid(row=r,column=1)
 
 pump_off['state']='disabled'
 root.mainloop()
-
